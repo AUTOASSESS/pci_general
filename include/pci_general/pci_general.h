@@ -238,12 +238,14 @@ class PCIGeneral : public PCIManager {
   double planner_trigger_lead_time_;
   double path_end_dist_thr_;
   double path_end_yaw_thr_;
+  bool target_reach_final_yaw_enabled_ = false;
   double path_end_dist_scale_;
   double path_progression_dist_thr_;
   double path_progression_dist_thr_min_;
   double path_progression_yaw_thr_;
   double path_progression_yaw_thr_min_;
   double path_progression_pitch_thr_;
+  bool camera_pitch_tracking_enabled_ = true;
   std::string world_frame_id_;
   bool smooth_heading_enable_;
   double trajectory_lead_time_;
@@ -276,7 +278,8 @@ class PCIGeneral : public PCIManager {
   trajectory_msgs::MultiDOFJointTrajectoryPoint trajectory_point_msg_;
   nav_msgs::Path output_path_;
 
-  double current_cam_pitch_;
+  double current_cam_pitch_ = 0.0;
+  bool camera_pitch_received_ = false;
 
   int n_seq_;
   int wp_curr_;

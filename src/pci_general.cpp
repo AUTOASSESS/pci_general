@@ -464,6 +464,12 @@ namespace explorer
     }
 
     current_path_type_ = path_type;
+    std::string action_mode;
+    nh_.param<std::string>("/agentic_mission/action_mode", action_mode, "");
+    bool requested_yaw = false;
+    nh_.param("/agentic_mission/target_yaw_enabled", requested_yaw, false);
+    target_reach_final_yaw_enabled_ = requested_yaw &&
+        (action_mode == "global_repositioning" || action_mode == "target_reach");
 
     std::vector<geometry_msgs::Pose> path_new = path;
     if (path_type != ExecutionPathType::kManualPath)
@@ -752,17 +758,28 @@ namespace explorer
       else
       {
         dist_thr = path_end_dist_thr_;
+        if (target_reach_final_yaw_enabled_) yaw_thr = path_end_yaw_thr_;
       }
 
       double wp_dist = calculateDistance(current_pose_, executing_path_[path_waypoint_ind_]);
       
       double delta_yaw = std::abs(wp_yaw - current_yaw);
       truncateYaw(delta_yaw);
+      if (target_reach_final_yaw_enabled_ && path_waypoint_ind_ == executing_path_.size() - 1)
+        delta_yaw = std::abs(std::atan2(std::sin(wp_yaw - current_yaw),
+                                       std::cos(wp_yaw - current_yaw)));
 
-      double delta_pitch = std::abs(wp_pitch - current_cam_pitch_);
-      truncateYaw(delta_pitch);
+      double delta_pitch = 0.0;
+      bool pitch_reached = true;
+      if (camera_pitch_tracking_enabled_)
+      {
+        delta_pitch = std::abs(wp_pitch - current_cam_pitch_);
+        truncateYaw(delta_pitch);
+        pitch_reached = camera_pitch_received_ &&
+                        delta_pitch <= path_progression_pitch_thr_;
+      }
       // std::cout << "wp_dist: " << wp_dist << ", dist_thr: " << dist_thr << ", delta_yaw: " << delta_yaw << ", yaw_thr: " << yaw_thr << ", delta_pitch: " << delta_pitch << ", path_thr: " << path_progression_pitch_thr_ << std::endl;
-      if (wp_dist <= dist_thr && delta_yaw <= yaw_thr && delta_pitch <= path_progression_pitch_thr_)
+      if (wp_dist <= dist_thr && delta_yaw <= yaw_thr && pitch_reached)
       {
         ++path_waypoint_ind_;
         if (path_waypoint_ind_ >= executing_path_.size())
@@ -792,10 +809,13 @@ namespace explorer
         path.poses.push_back(ps);
         if(pub_singple_wp_)
           path_pub_.publish(path);
-        double pitch_cmd = euler_custom.y();
-        std_msgs::Float64 pitch_msg;
-        pitch_msg.data = pitch_cmd;
-        act_cam_angle_pub_.publish(pitch_msg);
+        if (camera_pitch_tracking_enabled_)
+        {
+          double pitch_cmd = euler_custom.y();
+          std_msgs::Float64 pitch_msg;
+          pitch_msg.data = pitch_cmd;
+          act_cam_angle_pub_.publish(pitch_msg);
+        }
       }
 
       // if (pci_status_ == PCIStatus::kRunning)
@@ -829,7 +849,9 @@ namespace explorer
 
   void PCIGeneral::camPitchCallback(const sensor_msgs::JointState &state)
   {
+    if (state.position.empty() || !std::isfinite(state.position[0])) return;
     current_cam_pitch_ = state.position[0];
+    camera_pitch_received_ = true;
   }
 
   double PCIGeneral::getEndPointDistanceAlongPath(
@@ -1353,6 +1375,9 @@ namespace explorer
       path_progression_pitch_thr_ = 0.1;
       ROS_WARN_COND(param_verbosity >= Verbosity::WARN, "No path_progression_pitch_thr setting, setting it to %f (rad).", path_progression_pitch_thr_);
     }
+
+    ros::param::param(ns + "/camera_pitch_tracking_enabled",
+                      camera_pitch_tracking_enabled_, true);
 
     param_name = ns + "/trajectory_lead_time";
     if (!ros::param::get(param_name, trajectory_lead_time_))

@@ -3,6 +3,8 @@ trigger_mode: kManual
 init_motion_enable: false
 planner_trigger_lead_time: 0.0
 smooth_heading_enable: true
+camera_pitch_tracking_enabled: true
+path_end_yaw_thr: 0.4 # Optional final TargetReach yaw tolerance, radians.
 init_motion:
   z_takeoff: 1.5
   z_drop: 0.2
