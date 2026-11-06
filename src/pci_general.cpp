@@ -424,6 +424,9 @@ namespace explorer
     {
       mission_start_time_ = ros::Time::now().toSec();
     }
+    executing_limits_ = path_limits_;  // this path's; the next one names its own
+    path_limits_ = PathLimits();
+    timed_out_ = false;
     if (path.size() <= 1)
       return false; // require at least 2 nodes
 
@@ -516,7 +519,8 @@ namespace explorer
       interpolatePath(path_new, path_intp);
     else
       path_intp = path_new;
-    
+    executing_tolerances_ = pointTolerances(path, executing_limits_.waypoint_tolerances_m, path_intp);
+
     double time_passed = ros::Time::now().toSec() - mission_start_time_;
     ROS_WARN("Mission start time: %f, t now: %f", mission_start_time_, ros::Time::now().toSec());
     if(time_passed >= z_off_t_start_)
@@ -685,6 +689,7 @@ namespace explorer
     is_homing_msg.data = is_homing_;
     is_homing_pub_.publish(is_homing_msg);
     pci_status_ = PCIStatus::kRunning;
+    path_started_ = ros::Time::now();
 
     path_waypoint_ind_ = 0;
     return true;
@@ -699,6 +704,21 @@ namespace explorer
       pci_status_ = PCIStatus::kError;
       path_waypoint_ind_ = 0;
     }
+    if (pci_status_ == PCIStatus::kRunning && executing_limits_.time_limit_s > 0.0 &&
+        (ros::Time::now() - path_started_).toSec() > executing_limits_.time_limit_s)
+    {
+      ROS_WARN("PCI: the path did not end within its %.1f s: stopped", executing_limits_.time_limit_s);
+      timed_out_ = true;
+      pci_status_ = PCIStatus::kError;  // the step fails; the runner holds the drone where it is
+      path_waypoint_ind_ = 0;
+    }
+    // This path's tolerances, else the parameters.
+    const double end_thr = executing_limits_.end_tolerance_m > 0.0 ? executing_limits_.end_tolerance_m
+                                                                    : path_end_dist_thr_;
+    const double prog_thr = executing_limits_.progression_tolerance_m > 0.0
+                                ? executing_limits_.progression_tolerance_m : path_progression_dist_thr_;
+    const double prog_min = executing_limits_.progression_tolerance_m > 0.0
+                                ? executing_limits_.progression_tolerance_m : path_progression_dist_thr_min_;
     if (pci_status_ == PCIStatus::kRunning)
     {
       double dist_thr;
@@ -727,13 +747,13 @@ namespace explorer
         Eigen::Vector3d d2 = p_2 - p_1;
         if(d1.norm() <= 0.001 || d2.norm() <= 0.001)
         {
-          dist_thr = path_end_dist_thr_;
+          dist_thr = end_thr;
         }
         else
         {
           double theta = std::acos((p_2 - p_1).normalized().dot((current_pos - p_1).normalized()));
           truncateAngle(theta);
-          dist_thr = std::max(path_progression_dist_thr_min_, (path_progression_dist_thr_ - path_progression_dist_thr_min_) * (2 * theta / M_PI - 1) + path_progression_dist_thr_min_);
+          dist_thr = std::max(prog_min, (prog_thr - prog_min) * (2 * theta / M_PI - 1) + prog_min);
         }
         Eigen::Quaterniond q_next;
         q_next.x() = executing_path_[path_waypoint_ind_+1].orientation.x;
@@ -751,9 +771,11 @@ namespace explorer
       }
       else
       {
-        dist_thr = path_end_dist_thr_;
+        dist_thr = end_thr;
       }
 
+      if (path_waypoint_ind_ < executing_tolerances_.size() && executing_tolerances_[path_waypoint_ind_] > 0.0)
+        dist_thr = executing_tolerances_[path_waypoint_ind_];  // a manhole pass's point
       double wp_dist = calculateDistance(current_pose_, executing_path_[path_waypoint_ind_]);
       
       double delta_yaw = std::abs(wp_yaw - current_yaw);
@@ -870,6 +892,35 @@ namespace explorer
     double delta = std::abs(angle1 - angle2);
     truncateYaw(delta);
     return delta;
+  }
+
+  std::vector<double> PCIGeneral::pointTolerances(const std::vector<geometry_msgs::Pose> &path,
+                                                  const std::vector<double> &tolerances,
+                                                  const std::vector<geometry_msgs::Pose> &executed)
+  {
+    constexpr double kOnSegmentM = 0.01;
+    std::vector<double> result(executed.size(), 0.0);
+    if (tolerances.size() != path.size())
+      return result;
+    auto at = [](const geometry_msgs::Pose &p) { return Eigen::Vector3d(p.position.x, p.position.y, p.position.z); };
+    for (size_t i = 0; i < path.size(); ++i)
+    {
+      if (tolerances[i] <= 0.0)
+        continue;
+      // The point alone, or the segment to the next one when both are tight.
+      const bool segment = i + 1 < path.size() && tolerances[i + 1] > 0.0;
+      const double tol = segment ? std::min(tolerances[i], tolerances[i + 1]) : tolerances[i];
+      const Eigen::Vector3d s = at(path[i]);
+      const Eigen::Vector3d d = segment ? Eigen::Vector3d(at(path[i + 1]) - s) : Eigen::Vector3d::Zero();
+      for (size_t j = 0; j < executed.size(); ++j)
+      {
+        const Eigen::Vector3d p = at(executed[j]);
+        const double t = d.squaredNorm() > 0.0 ? std::max(0.0, std::min(1.0, (p - s).dot(d) / d.squaredNorm())) : 0.0;
+        if ((s + t * d - p).norm() <= kOnSegmentM && (result[j] <= 0.0 || tol < result[j]))
+          result[j] = tol;
+      }
+    }
+    return result;
   }
 
   void PCIGeneral::interpolatePath(const std::vector<geometry_msgs::Pose> &path,

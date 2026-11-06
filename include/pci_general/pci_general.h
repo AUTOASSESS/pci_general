@@ -1,6 +1,7 @@
 #ifndef PCI_GENERAL_H_
 #define PCI_GENERAL_H_
 
+#include <algorithm>
 #include <cmath>
 #include <ros/ros.h>
 #include <tf/tf.h>
@@ -237,6 +238,9 @@ class PCIGeneral : public PCIManager {
   double dt_;
   double planner_trigger_lead_time_;
   double path_end_dist_thr_;
+  PathLimits executing_limits_;  // the running path's own tolerances and time limit
+  ros::Time path_started_;
+  std::vector<double> executing_tolerances_;  // one per executing_path_ point; 0: the path's own
   double path_end_yaw_thr_;
   double path_end_dist_scale_;
   double path_progression_dist_thr_;
@@ -290,6 +294,10 @@ class PCIGeneral : public PCIManager {
   double mission_start_time_ = -1.0;
   const double kVelMax = 2.0;
   const double kVelMin = 0.2;
+  // Each executed point's tolerance: a tight path point's, or a tight segment's, else 0.
+  static std::vector<double> pointTolerances(const std::vector<geometry_msgs::Pose> &path,
+                                             const std::vector<double> &tolerances,
+                                             const std::vector<geometry_msgs::Pose> &executed);
   void interpolatePath(const std::vector<geometry_msgs::Pose> &path,
                        std::vector<geometry_msgs::Pose> &path_res);
   void interpolatePath(const std::vector<geometry_msgs::Pose> &path,
